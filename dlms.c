@@ -254,6 +254,28 @@ static const value_string dlms_processing_option_names[] = {
     { 0, 0 }
 };
 
+/* Names of the values of the Application-context-name object identifiers 2.16.756.5.8.1.x */
+static const val64_string dlms_application_context_names[] = {
+    { 0x60857405080101, "logical-name-referencing-no-ciphering" },
+    { 0x60857405080102, "short-name-referencing-no-ciphering" },
+    { 0x60857405080103, "logical-name-referencing-with-ciphering" },
+    { 0x60857405080104, "short-name-referencing-with-ciphering" },
+    { 0, 0 }
+};
+
+/* Names of the values of the Mechanism-name object identifiers 2.16.756.5.8.2.x */
+static const val64_string dlms_mechanism_names[] = {
+    { 0x60857405080200, "lowest-level-security" },
+    { 0x60857405080201, "low-level-security" },
+    { 0x60857405080202, "high-level-security" },
+    { 0x60857405080203, "high-level-security-MD5" },
+    { 0x60857405080204, "high-level-security-SHA1" },
+    { 0x60857405080205, "high-level-security-GMAC" },
+    { 0x60857405080206, "high-level-security-SHA256" },
+    { 0x60857405080207, "high-level-security-ECDSA" },
+    { 0, 0 }
+};
+
 /* HDLC frame names for the control field values (with the RRR, P/F, and SSS bits masked off) */
 static const value_string dlms_hdlc_frame_names[] = {
     { 0x00, "I (Information)" },
@@ -691,8 +713,6 @@ static struct {
     header_field_info wrapper_header;
     /* APDU */
     header_field_info apdu;
-    header_field_info client_max_receive_pdu_size;
-    header_field_info server_max_receive_pdu_size;
     header_field_info get_request;
     header_field_info set_request;
     header_field_info action_request;
@@ -726,6 +746,37 @@ static struct {
     header_field_info long_processing_option;
     header_field_info long_service_class;
     header_field_info long_priority;
+    /* AARQ/AARE */
+    header_field_info protocol_version;
+    header_field_info application_context_name;
+    header_field_info called_ap_title;
+    header_field_info called_ae_qualifier;
+    header_field_info called_ap_invocation_id;
+    header_field_info called_ae_invocation_id;
+    header_field_info calling_ap_title;
+    header_field_info calling_ae_qualifier;
+    header_field_info calling_ap_invocation_id;
+    header_field_info calling_ae_invocation_id;
+    header_field_info sender_acse_requirements;
+    header_field_info mechanism_name;
+    header_field_info calling_authentication_value;
+    header_field_info implementation_information;
+    header_field_info user_information;
+    header_field_info result;
+    header_field_info result_source_diagnostic;
+    header_field_info responding_ap_title;
+    header_field_info responding_ae_qualifier;
+    header_field_info responding_ap_invocation_id;
+    header_field_info responding_ae_invocation_id;
+    header_field_info responder_acse_requirements;
+    header_field_info responding_authentication_value;
+    /* InitiateRequest/InitiateResponse */
+    header_field_info dedicated_key;
+    header_field_info response_allowed;
+    header_field_info quality_of_service;
+    header_field_info dlms_version_number;
+    header_field_info max_receive_pdu_size;
+    header_field_info vaa_name;
     /* Conformance bits */
     header_field_info conformance_general_protection;
     header_field_info conformance_general_block_transfer;
@@ -783,8 +834,6 @@ static struct {
     { "Wrapper Header", "dlms.wrapper", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     /* APDU */
     { "APDU", "dlms.apdu", FT_UINT8, BASE_DEC, dlms_apdu_names, 0, 0, HFILL },
-    { "Client Max Receive PDU Size", "dlms.client_max_receive_pdu_size", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
-    { "Server Max Receive PDU Size", "dlms.server_max_receive_pdu_size", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
     { "Get Request", "dlms.get_request", FT_UINT8, BASE_DEC, dlms_get_request_names, 0, 0, HFILL },
     { "Set Request", "dlms.set_request", FT_UINT8, BASE_DEC, dlms_set_request_names, 0, 0, HFILL },
     { "Action Request", "dlms.action_request", FT_UINT8, BASE_DEC, dlms_action_request_names, 0, 0, HFILL },
@@ -818,6 +867,37 @@ static struct {
     { "Processing Option", "dlms.processing_option", FT_UINT32, BASE_DEC, dlms_processing_option_names, 0x20000000, 0, HFILL },
     { "Service Class", "dlms.service_class", FT_UINT32, BASE_DEC, dlms_service_class_names, 0x40000000, 0, HFILL },
     { "Priority", "dlms.priority", FT_UINT32, BASE_DEC, dlms_priority_names, 0x80000000, 0, HFILL },
+    /* AARQ/AARE */
+    { "Protocol Version", "dlms.protocol_version", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Application Context Name", "dlms.application_context_name", FT_UINT56, BASE_VAL64_STRING, dlms_application_context_names, 0, 0, HFILL },
+    { "Called AP Title", "dlms.called_ap_title", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Called AE Qualifier", "dlms.called_ae_qualifier", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Called AP Invocation Id", "dlms.called_ap_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Called AE Invocation Id", "dlms.called_ae_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Calling AP Title", "dlms.calling_ap_title", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Calling AE Qualifier", "dlms.calling_ae_qualifier", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Calling AP Invocation Id", "dlms.calling_ap_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Calling AE Invocation Id", "dlms.calling_ae_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Sender ACSE Requirements", "dlms.sender_acse_requirements", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Mechanism Name", "dlms.mechanism_name", FT_UINT56, BASE_VAL64_STRING, dlms_mechanism_names, 0, 0, HFILL },
+    { "Calling Authentication Value", "dlms.calling_authentication_value", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Implementation Information", "dlms.implementation_information", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "User Information", "dlms.user_information", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Result", "dlms.result", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Result Source Diagnostic", "dlms.result_source_diagnostic", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responding AP Title", "dlms.responding_ap_title", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responding AE Qualifier", "dlms.responding_ae_qualifier", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responding AP Invocation Id", "dlms.responding_ap_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responding AE Invocation Id", "dlms.responding_ae_invocation_id", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responder ACSE Requirements", "dlms.responder_acse_requirements", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Responding Authentication Value", "dlms.responding_authentication_value", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    /* InitiateRequest/InitiateResponse */
+    { "Dedicated Key", "dlms.dedicated_key", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Response Allowed", "dlms.response_allowed", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "Quality of Service", "dlms.quality_of_service", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    { "DLMS Version Number", "dlms.dlms_version_number", FT_UINT8, BASE_DEC, 0, 0, 0, HFILL },
+    { "Max Receive PDU Size", "dlms.max_receive_pdu_size", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
+    { "VAA Name", "dlms.vaa_name", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
     /* proposed-conformance and negotiated-conformance bits */
     { "general-protection", "dlms.conformance.general_protection", FT_UINT24, BASE_DEC, 0, 0x400000, 0, HFILL },
     { "general-block-transfer", "dlms.conformance.general_block_transfer", FT_UINT24, BASE_DEC, 0, 0x200000, 0, HFILL },
@@ -1513,6 +1593,112 @@ dlms_dissect_data_notification(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tr
 }
 
 static void
+dlms_dissect_application_context_name(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+{
+    if (length == 9) {
+        proto_tree_add_item(tree, &dlms_hfi.application_context_name, tvb, offset + 4, 7, ENC_BIG_ENDIAN);
+    }
+}
+
+static void
+dlms_dissect_mechanism_name(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+{
+    if (length == 7) {
+        proto_tree_add_item(tree, &dlms_hfi.mechanism_name, tvb, offset + 2, 7, ENC_BIG_ENDIAN);
+    }
+}
+
+static void
+dlms_dissect_initiate_request(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+{
+    gint val, len;
+
+    /* OCTET STRING */
+    offset += 2;
+
+    /* InitiateRequest */
+    offset += 1;
+
+    /* dedicated-key */
+    val = tvb_get_guint8(tvb, offset);
+    if (val == 0) { /* not present */
+        len = 1;
+    } else {
+        return;
+    }
+    proto_tree_add_item(tree, &dlms_hfi.dedicated_key, tvb, offset, len, ENC_NA);
+    offset += len;
+
+    /* response-allowed */
+    val = tvb_get_guint8(tvb, offset);
+    if (val == 0) { /* default (true) */
+        len = 1;
+    } else {
+        return;
+    }
+    proto_tree_add_item(tree, &dlms_hfi.response_allowed, tvb, offset, len, ENC_NA);
+    offset += len;
+
+    /* proposed-quality-of-service */
+    val = tvb_get_guint8(tvb, offset);
+    if (val == 0) { /* not present */
+        len = 1;
+    } else {
+        return;
+    }
+    proto_tree_add_item(tree, &dlms_hfi.quality_of_service, tvb, offset, len, ENC_NA);
+    offset += len;
+
+    /* proposed-dlms-version-number */
+    proto_tree_add_item(tree, &dlms_hfi.dlms_version_number, tvb, offset, 1, ENC_NA);
+    offset += 1;
+
+    /* proposed-conformance */
+    dlms_dissect_conformance(tvb, tree, offset);
+    offset += 7;
+
+    /* client-max-receive-pdu-size */
+    proto_tree_add_item(tree, &dlms_hfi.max_receive_pdu_size, tvb, offset, 2, ENC_BIG_ENDIAN);
+}
+
+static void
+dlms_dissect_initiate_response(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+{
+    gint val, len;
+
+    /* OCTET STRING */
+    offset += 2;
+
+    /* InitiateResponse */
+    offset += 1;
+
+    /* negotiated-quality-of-service */
+    val = tvb_get_guint8(tvb, offset);
+    if (val == 0) { /* not present */
+        len = 1;
+    } else {
+        return;
+    }
+    proto_tree_add_item(tree, &dlms_hfi.quality_of_service, tvb, offset, len, ENC_NA);
+    offset += len;
+
+    /* negotiated-dlms-version-number */
+    proto_tree_add_item(tree, &dlms_hfi.dlms_version_number, tvb, offset, 1, ENC_NA);
+    offset += 1;
+
+    /* negotiated-conformance */
+    dlms_dissect_conformance(tvb, tree, offset);
+    offset += 7;
+
+    /* server-max-receive-pdu-size */
+    proto_tree_add_item(tree, &dlms_hfi.max_receive_pdu_size, tvb, offset, 2, ENC_BIG_ENDIAN);
+    offset += 2;
+
+    /* vaa-name */
+    proto_tree_add_item(tree, &dlms_hfi.vaa_name, tvb, offset, 2, ENC_BIG_ENDIAN);
+}
+
+static void
 dlms_dissect_aarq(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     proto_tree *subtree;
@@ -1525,10 +1711,53 @@ dlms_dissect_aarq(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
     while (offset < end) {
         tag = tvb_get_guint8(tvb, offset);
         length = tvb_get_guint8(tvb, offset + 1);
-        if (tag == 0xbe) { /* user-information */
-            subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User-Information");
-            dlms_dissect_conformance(tvb, subtree, offset + 2 + length - 9);
-            proto_tree_add_item(subtree, &dlms_hfi.client_max_receive_pdu_size, tvb, offset + 2 + length - 2, 2, ENC_BIG_ENDIAN);
+        switch (tag & 31) {
+        case 0:
+            proto_tree_add_item(tree, &dlms_hfi.protocol_version, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 1:
+            dlms_dissect_application_context_name(tvb, tree, offset, length);
+            break;
+        case 2:
+            proto_tree_add_item(tree, &dlms_hfi.called_ap_title, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 3:
+            proto_tree_add_item(tree, &dlms_hfi.called_ae_qualifier, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 4:
+            proto_tree_add_item(tree, &dlms_hfi.called_ap_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 5:
+            proto_tree_add_item(tree, &dlms_hfi.called_ae_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 6:
+            proto_tree_add_item(tree, &dlms_hfi.calling_ap_title, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 7:
+            proto_tree_add_item(tree, &dlms_hfi.calling_ae_qualifier, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 8:
+            proto_tree_add_item(tree, &dlms_hfi.calling_ap_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 9:
+            proto_tree_add_item(tree, &dlms_hfi.calling_ae_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 10:
+            proto_tree_add_item(tree, &dlms_hfi.sender_acse_requirements, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 11:
+            dlms_dissect_mechanism_name(tvb, tree, offset, length);
+            break;
+        case 12:
+            proto_tree_add_item(tree, &dlms_hfi.calling_authentication_value, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 29:
+            proto_tree_add_item(tree, &dlms_hfi.implementation_information, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 30:
+            subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User Information");
+            dlms_dissect_initiate_request(tvb, subtree, offset + 2, length);
+            break;
         }
         offset += 2 + length;
     }
@@ -1547,10 +1776,47 @@ dlms_dissect_aare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
     while (offset < end) {
         tag = tvb_get_guint8(tvb, offset);
         length = tvb_get_guint8(tvb, offset + 1);
-        if (tag == 0xbe) { /* user-information */
-            subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User-Information");
-            dlms_dissect_conformance(tvb, subtree, offset + 2 + length - 11);
-            proto_tree_add_item(subtree, &dlms_hfi.server_max_receive_pdu_size, tvb, offset + 2 + length - 4, 2, ENC_BIG_ENDIAN);
+        switch (tag & 31) {
+        case 0:
+            proto_tree_add_item(tree, &dlms_hfi.protocol_version, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 1:
+            dlms_dissect_application_context_name(tvb, tree, offset, length);
+            break;
+        case 2:
+            proto_tree_add_item(tree, &dlms_hfi.result, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 3:
+            proto_tree_add_item(tree, &dlms_hfi.result_source_diagnostic, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 4:
+            proto_tree_add_item(tree, &dlms_hfi.responding_ap_title, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 5:
+            proto_tree_add_item(tree, &dlms_hfi.responding_ae_qualifier, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 6:
+            proto_tree_add_item(tree, &dlms_hfi.responding_ap_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 7:
+            proto_tree_add_item(tree, &dlms_hfi.responding_ae_invocation_id, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 8:
+            proto_tree_add_item(tree, &dlms_hfi.responder_acse_requirements, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 9:
+            dlms_dissect_mechanism_name(tvb, tree, offset, length);
+            break;
+        case 10:
+            proto_tree_add_item(tree, &dlms_hfi.responding_authentication_value, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 29:
+            proto_tree_add_item(tree, &dlms_hfi.implementation_information, tvb, offset, 2 + length, ENC_NA);
+            break;
+        case 30:
+            subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User Information");
+            dlms_dissect_initiate_response(tvb, subtree, offset + 2, length);
+            break;
         }
         offset += 2 + length;
     }
