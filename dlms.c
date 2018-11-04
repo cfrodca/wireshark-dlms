@@ -45,6 +45,20 @@
 #define DLMS_GET_RESPONSE 196
 #define DLMS_SET_RESPONSE 197
 #define DLMS_ACTION_RESPONSE 199
+#define DLMS_GLO_GET_REQUEST 200
+#define DLMS_GLO_SET_REQUEST 201
+#define DLMS_GLO_EVENT_NOTIFICATION_REQUEST 202
+#define DLMS_GLO_ACTION_REQUEST 203
+#define DLMS_GLO_GET_RESPONSE 204
+#define DLMS_GLO_SET_RESPONSE 205
+#define DLMS_GLO_ACTION_RESPONSE 207
+#define DLMS_DED_GET_REQUEST 208
+#define DLMS_DED_SET_REQUEST 209
+#define DLMS_DED_EVENT_NOTIFICATION_REQUEST 210
+#define DLMS_DED_ACTION_REQUEST 211
+#define DLMS_DED_GET_RESPONSE 212
+#define DLMS_DED_SET_RESPONSE 213
+#define DLMS_DED_ACTION_RESPONSE 215
 #define DLMS_EXCEPTION_RESPONSE 216
 #define DLMS_ACCESS_REQUEST 217
 #define DLMS_ACCESS_RESPONSE 218
@@ -61,6 +75,20 @@ static const value_string dlms_apdu_names[] = {
     { DLMS_GET_RESPONSE, "get-response" },
     { DLMS_SET_RESPONSE, "set-response" },
     { DLMS_ACTION_RESPONSE, "action-response" },
+    { DLMS_GLO_GET_REQUEST, "glo-get-request" },
+    { DLMS_GLO_SET_REQUEST, "glo-set-request" },
+    { DLMS_GLO_EVENT_NOTIFICATION_REQUEST, "glo-event-notification-request" },
+    { DLMS_GLO_ACTION_REQUEST, "glo-action-request" },
+    { DLMS_GLO_GET_RESPONSE, "glo-get-response" },
+    { DLMS_GLO_SET_RESPONSE, "glo-set-response" },
+    { DLMS_GLO_ACTION_RESPONSE, "glo-action-response" },
+    { DLMS_DED_GET_REQUEST, "ded-get-request" },
+    { DLMS_DED_SET_REQUEST, "ded-set-request" },
+    { DLMS_DED_EVENT_NOTIFICATION_REQUEST, "ded-event-notification-request" },
+    { DLMS_DED_ACTION_REQUEST, "ded-action-request" },
+    { DLMS_DED_GET_RESPONSE, "ded-get-response" },
+    { DLMS_DED_SET_RESPONSE, "ded-set-response" },
+    { DLMS_DED_ACTION_RESPONSE, "ded-action-response" },
     { DLMS_EXCEPTION_RESPONSE, "exception-response" },
     { DLMS_ACCESS_REQUEST, "access-request" },
     { DLMS_ACCESS_RESPONSE, "access-response" },
@@ -276,6 +304,11 @@ static const val64_string dlms_mechanism_names[] = {
     { 0, 0 }
 };
 
+/* Bit flags of the security control byte */
+#define DLMS_SECURITY_CONTROL_AUTHENTICATION 0x10
+#define DLMS_SECURITY_CONTROL_ENCRYPTION 0x20
+#define DLMS_SECURITY_CONTROL_COMPRESSION 0x80
+
 /* HDLC frame names for the control field values (with the RRR, P/F, and SSS bits masked off) */
 static const value_string dlms_hdlc_frame_names[] = {
     { 0x00, "I (Information)" },
@@ -319,6 +352,7 @@ dlms_get_class(int class_id) {
         22, /* single action schedule */
         23, /* iec hdlc setup */
         30, /* data protection */
+        64, /* security setup */
         70, /* disconnect control */
         71, /* limiter */
         104, /* zigbee network control */
@@ -522,6 +556,24 @@ dlms_get_class(int class_id) {
                 "get_protected_attributes",
                 "set_protected_attributes",
                 "invoke_protected_method"
+            }
+        },{
+            "security_setup",
+            {
+                "security_policy",
+                "security_suite",
+                "client_system_title",
+                "server_system_title",
+                "certificates"
+            },{
+                "security_activate",
+                "key_transfer",
+                "key_agreement",
+                "generate_key_pair",
+                "generate_certificate_request",
+                "import_certificate",
+                "export_certificate",
+                "remove_certificate"
             }
         },{
             "disconnect_control",
@@ -746,6 +798,14 @@ static struct {
     header_field_info long_processing_option;
     header_field_info long_service_class;
     header_field_info long_priority;
+    /* Security */
+    header_field_info security_suite_id;
+    header_field_info authentication;
+    header_field_info encryption;
+    header_field_info key_set;
+    header_field_info compression;
+    header_field_info invocation_counter;
+    header_field_info authentication_tag;
     /* AARQ/AARE */
     header_field_info protocol_version;
     header_field_info application_context_name;
@@ -867,6 +927,14 @@ static struct {
     { "Processing Option", "dlms.processing_option", FT_UINT32, BASE_DEC, dlms_processing_option_names, 0x20000000, 0, HFILL },
     { "Service Class", "dlms.service_class", FT_UINT32, BASE_DEC, dlms_service_class_names, 0x40000000, 0, HFILL },
     { "Priority", "dlms.priority", FT_UINT32, BASE_DEC, dlms_priority_names, 0x80000000, 0, HFILL },
+    /* Security */
+    { "Security Suite Id", "dlms.security_suite_id", FT_UINT8, BASE_DEC, 0, 0xf, 0, HFILL },
+    { "Authentication", "dlms.authentication", FT_UINT8, BASE_DEC, 0, DLMS_SECURITY_CONTROL_AUTHENTICATION, 0, HFILL },
+    { "Encryption", "dlms.encryption", FT_UINT8, BASE_DEC, 0, DLMS_SECURITY_CONTROL_ENCRYPTION, 0, HFILL },
+    { "Key Set", "dlms.key_set", FT_UINT8, BASE_DEC, 0, 0x40, 0, HFILL },
+    { "Compression", "dlms.compression", FT_UINT8, BASE_DEC, 0, DLMS_SECURITY_CONTROL_COMPRESSION, 0, HFILL },
+    { "Invocation Counter", "dlms.invocation_counter", FT_UINT32, BASE_DEC, 0, 0, 0, HFILL },
+    { "Authentication Tag", "dlms.authentication_tag", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     /* AARQ/AARE */
     { "Protocol Version", "dlms.protocol_version", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     { "Application Context Name", "dlms.application_context_name", FT_UINT56, BASE_VAL64_STRING, dlms_application_context_names, 0, 0, HFILL },
@@ -954,6 +1022,8 @@ static struct {
     gint conformance; /* InitiateRequest proposed-conformance and InitiateResponse negotiated-confirmance */
     gint datablock;
     gint data;
+    gint security_control;
+    gint protected_apdu;
     /* fragment_items */
     gint fragment;
     gint fragments;
@@ -2059,6 +2129,48 @@ dlms_dissect_access_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree
     }
 }
 
+static void dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset);
+
+static void
+dlms_dissect_ciphered_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
+{
+    proto_tree *subtree;
+    tvbuff_t *subtvb;
+    int length, security_control;
+
+    length = dlms_dissect_length(tvb, tree, &offset);
+
+    subtree = proto_tree_add_subtree(tree, tvb, offset, 1, dlms_ett.security_control, 0, "Security Control");
+    proto_tree_add_item(subtree, &dlms_hfi.security_suite_id, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subtree, &dlms_hfi.authentication, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subtree, &dlms_hfi.encryption, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subtree, &dlms_hfi.key_set, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subtree, &dlms_hfi.compression, tvb, offset, 1, ENC_NA);
+    security_control = tvb_get_guint8(tvb, offset);
+    offset += 1;
+    length -= 1;
+
+    proto_tree_add_item(tree, &dlms_hfi.invocation_counter, tvb, offset, 4, ENC_BIG_ENDIAN);
+    offset += 4;
+    length -= 4;
+
+    if (security_control & DLMS_SECURITY_CONTROL_AUTHENTICATION) {
+        length -= 12;
+    }
+    if (security_control & DLMS_SECURITY_CONTROL_ENCRYPTION) {
+        subtree = proto_tree_add_subtree(tree, tvb, offset, length, dlms_ett.protected_apdu, 0, "Encrypted APDU");
+    } else {
+        subtree = proto_tree_add_subtree(tree, tvb, offset, length, dlms_ett.protected_apdu, 0, "Protected APDU");
+        subtvb = tvb_new_subset_length(tvb, offset, length);
+        dlms_dissect_apdu(subtvb, pinfo, subtree, 0);
+    }
+    offset += length;
+
+    if (security_control & DLMS_SECURITY_CONTROL_AUTHENTICATION) {
+        proto_tree_add_item(tree, &dlms_hfi.authentication_tag, tvb, offset, 12, ENC_NA);
+    }
+}
+
 /* Dissect a DLMS Application Packet Data Unit (APDU) */
 static void
 dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
@@ -2092,6 +2204,9 @@ dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
         dlms_dissect_set_response(tvb, pinfo, tree, offset);
     } else if (choice == DLMS_ACTION_RESPONSE) {
         dlms_dissect_action_response(tvb, pinfo, tree, offset);
+    } else if (choice >= DLMS_GLO_GET_REQUEST && choice <= DLMS_DED_ACTION_RESPONSE) {
+        col_set_str(pinfo->cinfo, COL_INFO, val_to_str_const(choice, dlms_apdu_names, "Unknown APDU"));
+        dlms_dissect_ciphered_apdu(tvb, pinfo, tree, offset);
     } else if (choice == DLMS_EXCEPTION_RESPONSE) {
         dlms_dissect_exception_response(tvb, pinfo, tree, offset);
     } else if (choice == DLMS_ACCESS_REQUEST) {
