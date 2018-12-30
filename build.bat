@@ -5,7 +5,8 @@
 @set wireshark_build_dir=..\wireshark-2.6.0-build64
 @set wireshark_run_dir=%wireshark_build_dir%\run\RelWithDebInfo
 @set gtk2_dir=..\wireshark-win64-libs-2.6\gtk2
+@set libgcrypt_dir=..\wireshark-win64-libs-2.6\libgcrypt-1.7.6-win64ws
 
-cl.exe /nologo /O2 /I%wireshark_source_dir% /I%wireshark_build_dir% /I%gtk2_dir%\include\glib-2.0 /I%gtk2_dir%\lib\glib-2.0\include /LD dlms.c %wireshark_run_dir%\wireshark.lib
+cl.exe /nologo /O2 /I%wireshark_source_dir% /I%wireshark_build_dir% /I%gtk2_dir%\include\glib-2.0 /I%gtk2_dir%\lib\glib-2.0\include /I%libgcrypt_dir%\include /LD dlms.c %wireshark_run_dir%\wireshark.lib %gtk2_dir%\lib\glib-2.0.lib %libgcrypt_dir%\bin\libgcrypt-20.lib
 
 copy dlms.dll %wireshark_run_dir%\plugins\2.6\epan\dlms.dll

@@ -26,14 +26,20 @@
 #include <epan/expert.h>
 #include <epan/packet.h>
 #include <epan/reassemble.h>
+#include <epan/uat.h>
 #include <ws_symbol_export.h>
+#include <wsutil/wsgcrypt.h>
 #include "obis.h"
 
 /* The TCP and UDP port number assigned by IANA for DLMS */
 #define DLMS_PORT 4059
 
 /* Choice values for the currently supported ACSE and xDLMS APDUs */
+#define DLMS_INITIATE_REQUEST 1
+#define DLMS_INITIATE_RESPONSE 8
 #define DLMS_DATA_NOTIFICATION 15
+#define DLMS_GLO_INITIATE_REQUEST 33
+#define DLMS_GLO_INITIATE_RESPONSE 40
 #define DLMS_AARQ 96
 #define DLMS_AARE 97
 #define DLMS_RLRQ 98
@@ -63,7 +69,11 @@
 #define DLMS_ACCESS_REQUEST 217
 #define DLMS_ACCESS_RESPONSE 218
 static const value_string dlms_apdu_names[] = {
+    { DLMS_INITIATE_REQUEST, "initiate-request" },
+    { DLMS_INITIATE_RESPONSE, "initiate-response" },
     { DLMS_DATA_NOTIFICATION, "data-notification" },
+    { DLMS_GLO_INITIATE_REQUEST, "glo-initiate-request" },
+    { DLMS_GLO_INITIATE_RESPONSE, "glo-initiate-response" },
     { DLMS_AARQ, "aarq" },
     { DLMS_AARE, "aare" },
     { DLMS_RLRQ, "rlrq" },
@@ -1089,6 +1099,102 @@ static const fragment_items dlms_fragment_items = {
     "Fragments"
 };
 
+/*
+ * Decryption.
+ * The security material required for decryption is inserted by the user
+ * in the GUI preference dialog (Edit -> Preferences -> Protocols -> DLMS -> Keys).
+ * Each entry specifies one set of security materials to try when decryting.
+ * The entries are tried in order. The first one that decrypts successfully is used.
+ */
+
+typedef struct _dlms_key_entry_t {
+    unsigned char system_title[8];
+    unsigned char guek[16];  /* global unicast encryption key */
+    unsigned char gak[16];  /* global authentication key */
+} dlms_key_entry_t;
+
+static gboolean
+dlms_keys_check(void *record, const char *ptr, unsigned len, const void *chk_data, const void *fld_data, char **err) {
+    unsigned expected_len = (size_t)chk_data;
+    if (len != expected_len) {
+        *err = g_strdup_printf("Invalid field length %u (expecting %u)", len, expected_len);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void
+dlms_keys_set(void *record, const char *ptr, unsigned len, const void *set_data, const void *fld_data) {
+    unsigned offset = (size_t)fld_data;
+    memcpy((char *)record + offset, ptr, len);
+}
+
+static void
+dlms_keys_tostring(void *record, char **out_ptr, unsigned *out_len, const void *tostr_data, const void *fld_data) {
+    unsigned len = (size_t)tostr_data;
+    unsigned offset = (size_t)fld_data;
+    *out_ptr = g_memdup((char *)record + offset, len);
+    *out_len = len;
+}
+
+static uat_field_t dlms_keys_uat_fields[] = {
+#define DLMS_KEYS_UAT_FIELD(field, title, description) { #field, title, PT_TXTMOD_HEXBYTES, { dlms_keys_check, dlms_keys_set, dlms_keys_tostring }, { (void *)sizeof(((dlms_key_entry_t *)0)->field), 0, (void *)sizeof(((dlms_key_entry_t *)0)->field) }, (void *)offsetof(dlms_key_entry_t, field), description, FLDFILL }
+    DLMS_KEYS_UAT_FIELD(system_title, "System Title", "8 bytes in hexadecimal format"),
+    DLMS_KEYS_UAT_FIELD(guek, "Global Unicast Encryption Key", "16 bytes in hexadecimal format"),
+    DLMS_KEYS_UAT_FIELD(gak, "Global Authentication Key", "16 bytes in hexadecimal format"),
+    UAT_END_FIELDS
+#undef DLMS_KEYS_UAT_FIELD
+};
+
+static dlms_key_entry_t *dlms_key_entries;
+static guint dlms_key_entry_count;
+static gcry_cipher_hd_t dlms_gcry_cipher_hd;
+
+static tvbuff_t *
+dlms_decrypt(tvbuff_t *tvb, packet_info *pinfo, gint offset, gint length, guint security_control, guint invocation_counter) {
+    tvbuff_t *decrypted_tvb = NULL;
+    unsigned char iv[12]; /* initialization vector */
+    unsigned char ad[17]; /* associated data */
+    void *plaintext;
+    const void *ciphertext, *tag;
+    const int tag_length = 12;
+    unsigned i, j;
+
+    plaintext = wmem_alloc(pinfo->pool, length);
+    ciphertext = tvb_get_ptr(tvb, offset, length);
+    tag = tvb_get_ptr(tvb, offset + length, tag_length);
+
+    iv[8] = invocation_counter >> 24;
+    iv[9] = invocation_counter >> 16;
+    iv[10] = invocation_counter >> 8;
+    iv[11] = invocation_counter;
+
+    ad[0] = security_control;
+
+    for (i = 0; i < dlms_key_entry_count; i++) {
+        gcry_cipher_setkey(dlms_gcry_cipher_hd, dlms_key_entries[i].guek, sizeof(dlms_key_entries[i].guek));
+
+        for (j = 0; j < sizeof(dlms_key_entries[i].system_title); j++) {
+            iv[j] = dlms_key_entries[i].system_title[j];
+        }
+        gcry_cipher_setiv(dlms_gcry_cipher_hd, iv, sizeof(iv));
+
+        for (j = 0; j < sizeof(dlms_key_entries[i].gak); j++) {
+            ad[j + 1] = dlms_key_entries[i].gak[j];
+        }
+        gcry_cipher_authenticate(dlms_gcry_cipher_hd, ad, sizeof(ad));
+
+        gcry_cipher_decrypt(dlms_gcry_cipher_hd, plaintext, length, ciphertext, length);
+        if (!gcry_cipher_checktag(dlms_gcry_cipher_hd, tag, tag_length)) {
+            decrypted_tvb = tvb_new_child_real_data(tvb, plaintext, length, length);
+            add_new_data_source(pinfo, decrypted_tvb, "Decrypted data");
+            break;
+        }
+    }
+
+    return decrypted_tvb;
+}
+
 static void
 dlms_dissect_invoke_id_and_priority(proto_tree *tree, tvbuff_t *tvb, gint *offset)
 {
@@ -1679,22 +1785,16 @@ dlms_dissect_mechanism_name(tvbuff_t *tvb, proto_tree *tree, gint offset, gint l
 }
 
 static void
-dlms_dissect_initiate_request(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+dlms_dissect_initiate_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     gint val, len;
 
-    /* OCTET STRING */
-    offset += 2;
-
-    /* InitiateRequest */
-    offset += 1;
-
     /* dedicated-key */
     val = tvb_get_guint8(tvb, offset);
-    if (val == 0) { /* not present */
-        len = 1;
+    if (val) {
+        len = 2 + tvb_get_guint8(tvb, offset + 1);
     } else {
-        return;
+        len = 1;
     }
     proto_tree_add_item(tree, &dlms_hfi.dedicated_key, tvb, offset, len, ENC_NA);
     offset += len;
@@ -1732,15 +1832,9 @@ dlms_dissect_initiate_request(tvbuff_t *tvb, proto_tree *tree, gint offset, gint
 }
 
 static void
-dlms_dissect_initiate_response(tvbuff_t *tvb, proto_tree *tree, gint offset, gint length)
+dlms_dissect_initiate_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     gint val, len;
-
-    /* OCTET STRING */
-    offset += 2;
-
-    /* InitiateResponse */
-    offset += 1;
 
     /* negotiated-quality-of-service */
     val = tvb_get_guint8(tvb, offset);
@@ -1768,10 +1862,13 @@ dlms_dissect_initiate_response(tvbuff_t *tvb, proto_tree *tree, gint offset, gin
     proto_tree_add_item(tree, &dlms_hfi.vaa_name, tvb, offset, 2, ENC_BIG_ENDIAN);
 }
 
+static void dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset);
+
 static void
 dlms_dissect_aarq(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     proto_tree *subtree;
+    tvbuff_t *subtvb;
     int end, length, tag;
 
     col_set_str(pinfo->cinfo, COL_INFO, "AARQ");
@@ -1826,7 +1923,8 @@ dlms_dissect_aarq(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
             break;
         case 30:
             subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User Information");
-            dlms_dissect_initiate_request(tvb, subtree, offset + 2, length);
+            subtvb = tvb_new_subset_length(tvb, offset + 4, length - 2);
+            dlms_dissect_apdu(subtvb, pinfo, subtree, 0);
             break;
         }
         offset += 2 + length;
@@ -1837,6 +1935,7 @@ static void
 dlms_dissect_aare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     proto_tree *subtree;
+    tvbuff_t *subtvb;
     int end, length, tag;
 
     col_set_str(pinfo->cinfo, COL_INFO, "AARE");
@@ -1885,7 +1984,8 @@ dlms_dissect_aare(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
             break;
         case 30:
             subtree = proto_tree_add_subtree(tree, tvb, offset, 2 + length, dlms_ett.user_information, 0, "User Information");
-            dlms_dissect_initiate_response(tvb, subtree, offset + 2, length);
+            subtvb = tvb_new_subset_length(tvb, offset + 4, length - 2);
+            dlms_dissect_apdu(subtvb, pinfo, subtree, 0);
             break;
         }
         offset += 2 + length;
@@ -2129,14 +2229,12 @@ dlms_dissect_access_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree
     }
 }
 
-static void dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset);
-
 static void
 dlms_dissect_ciphered_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
 {
     proto_tree *subtree;
     tvbuff_t *subtvb;
-    int length, security_control;
+    int length, security_control, invocation_counter;
 
     length = dlms_dissect_length(tvb, tree, &offset);
 
@@ -2151,17 +2249,20 @@ dlms_dissect_ciphered_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
     length -= 1;
 
     proto_tree_add_item(tree, &dlms_hfi.invocation_counter, tvb, offset, 4, ENC_BIG_ENDIAN);
+    invocation_counter = tvb_get_ntohl(tvb, offset);
     offset += 4;
     length -= 4;
 
     if (security_control & DLMS_SECURITY_CONTROL_AUTHENTICATION) {
         length -= 12;
     }
+    subtree = proto_tree_add_subtree(tree, tvb, offset, length, dlms_ett.protected_apdu, 0, "Protected APDU");
     if (security_control & DLMS_SECURITY_CONTROL_ENCRYPTION) {
-        subtree = proto_tree_add_subtree(tree, tvb, offset, length, dlms_ett.protected_apdu, 0, "Encrypted APDU");
+        subtvb = dlms_decrypt(tvb, pinfo, offset, length, security_control, invocation_counter);
     } else {
-        subtree = proto_tree_add_subtree(tree, tvb, offset, length, dlms_ett.protected_apdu, 0, "Protected APDU");
         subtvb = tvb_new_subset_length(tvb, offset, length);
+    }
+    if (subtvb) {
         dlms_dissect_apdu(subtvb, pinfo, subtree, 0);
     }
     offset += length;
@@ -2180,41 +2281,80 @@ dlms_dissect_apdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offs
     proto_tree_add_item(tree, &dlms_hfi.apdu, tvb, offset, 1, ENC_NA);
     choice = tvb_get_guint8(tvb, offset);
     offset += 1;
-    if (choice == DLMS_DATA_NOTIFICATION) {
+    switch (choice) {
+    case DLMS_INITIATE_REQUEST:
+        dlms_dissect_initiate_request(tvb, pinfo, tree, offset);
+        break;
+    case DLMS_INITIATE_RESPONSE:
+        dlms_dissect_initiate_response(tvb, pinfo, tree, offset);
+        break;
+    case DLMS_DATA_NOTIFICATION:
         dlms_dissect_data_notification(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_AARQ) {
+        break;
+    case DLMS_AARQ:
         dlms_dissect_aarq(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_AARE) {
+        break;
+    case DLMS_AARE:
         dlms_dissect_aare(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_RLRQ) {
+        break;
+    case DLMS_RLRQ:
         col_set_str(pinfo->cinfo, COL_INFO, "RLRQ");
-    } else if (choice == DLMS_RLRE) {
+        break;
+    case DLMS_RLRE:
         col_set_str(pinfo->cinfo, COL_INFO, "RLRE");
-    } else if (choice == DLMS_GET_REQUEST) {
+        break;
+    case DLMS_GET_REQUEST:
         dlms_dissect_get_request(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_SET_REQUEST) {
+        break;
+    case DLMS_SET_REQUEST:
         dlms_dissect_set_request(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_EVENT_NOTIFICATION_REQUEST) {
+        break;
+    case DLMS_EVENT_NOTIFICATION_REQUEST:
         dlms_dissect_event_notification_request(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_ACTION_REQUEST) {
+        break;
+    case DLMS_ACTION_REQUEST:
         dlms_dissect_action_request(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_GET_RESPONSE) {
+        break;
+    case DLMS_GET_RESPONSE:
         dlms_dissect_get_response(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_SET_RESPONSE) {
+        break;
+    case DLMS_SET_RESPONSE:
         dlms_dissect_set_response(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_ACTION_RESPONSE) {
+        break;
+    case DLMS_ACTION_RESPONSE:
         dlms_dissect_action_response(tvb, pinfo, tree, offset);
-    } else if (choice >= DLMS_GLO_GET_REQUEST && choice <= DLMS_DED_ACTION_RESPONSE) {
+        break;
+    case DLMS_GLO_GET_REQUEST:
+    case DLMS_GLO_SET_REQUEST:
+    case DLMS_GLO_EVENT_NOTIFICATION_REQUEST:
+    case DLMS_GLO_GET_RESPONSE:
+    case DLMS_GLO_SET_RESPONSE:
+    case DLMS_GLO_ACTION_RESPONSE:
+    case DLMS_DED_GET_REQUEST:
+    case DLMS_DED_SET_REQUEST:
+    case DLMS_DED_EVENT_NOTIFICATION_REQUEST:
+    case DLMS_DED_ACTION_REQUEST:
+    case DLMS_DED_GET_RESPONSE:
+    case DLMS_DED_SET_RESPONSE:
+    case DLMS_DED_ACTION_RESPONSE:
         col_set_str(pinfo->cinfo, COL_INFO, val_to_str_const(choice, dlms_apdu_names, "Unknown APDU"));
+        /* fall through */
+    case DLMS_GLO_INITIATE_REQUEST:
+    case DLMS_GLO_INITIATE_RESPONSE:
         dlms_dissect_ciphered_apdu(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_EXCEPTION_RESPONSE) {
+        break;
+    case DLMS_EXCEPTION_RESPONSE:
         dlms_dissect_exception_response(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_ACCESS_REQUEST) {
+        break;
+    case DLMS_ACCESS_REQUEST:
         dlms_dissect_access_request(tvb, pinfo, tree, offset);
-    } else if (choice == DLMS_ACCESS_RESPONSE) {
+        break;
+    case DLMS_ACCESS_RESPONSE:
         dlms_dissect_access_response(tvb, pinfo, tree, offset);
-    } else {
+        break;
+    default:
         col_set_str(pinfo->cinfo, COL_INFO, "Unknown APDU");
+        break;
     }
 }
 
@@ -2507,6 +2647,20 @@ dlms_register_protoinfo(void)
             dlms_reassembly_free_key_func,
         };
         reassembly_table_init(&dlms_reassembly_table, &f);
+    }
+
+    /* Decryption */
+    gcry_cipher_open(&dlms_gcry_cipher_hd, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_GCM, 0);
+    uat_t *uat_keys = uat_new("Keys", sizeof(dlms_key_entry_t), "dlms_keys", TRUE,
+                              &dlms_key_entries, &dlms_key_entry_count,
+                              UAT_AFFECTS_DISSECTION,
+                              NULL, NULL, NULL, NULL, NULL, NULL,
+                              dlms_keys_uat_fields);
+
+    /* Preferences */
+    {
+        module_t *prefs = prefs_register_protocol(dlms_proto, NULL);
+        prefs_register_uat_preference(prefs, "keys", "Keys", "Keys", uat_keys);
     }
 
     /* Register the DLMS dissector and the UDP handler */
