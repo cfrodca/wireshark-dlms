@@ -772,7 +772,9 @@ static struct {
     /* IEC 4-32 LLC */
     header_field_info iec432llc;
     /* Wrapper Protocol Data Unit (WPDU) */
-    header_field_info wrapper_header;
+    header_field_info wrapper_version;
+	header_field_info wrapper_wport;
+	header_field_info wrapper_length;
     /* APDU */
     header_field_info apdu;
     header_field_info get_request;
@@ -901,7 +903,9 @@ static struct {
     /* IEC 4-32 LLC */
     { "IEC 4-32 LLC Header", "dlms.iec432llc", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     /* Wrapper Protocol Data Unit (WPDU) */
-    { "Wrapper Header", "dlms.wrapper", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+	{ "Wrapper version", "dlms.wrapper.version", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },	
+	{ "wPort", "dlms.wrapper.wport", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
+	{ "Length", "dlms.wrapper.length", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
     /* APDU */
     { "APDU", "dlms.apdu", FT_UINT8, BASE_DEC, dlms_apdu_names, 0, 0, HFILL },
     { "Get Request", "dlms.get_request", FT_UINT8, BASE_DEC, dlms_get_request_names, 0, 0, HFILL },
@@ -1020,6 +1024,8 @@ static struct {
     gint hdlc_address;
     gint hdlc_control;
     gint hdlc_information;
+	gint wrapper;
+	gint wrapper_wport;
     gint invoke_id_and_priority;
     gint access_request_specification;
     gint access_request;
@@ -2423,6 +2429,12 @@ dlms_dissect_hdlc_information(tvbuff_t *tvb, proto_tree *tree, gint *offset)
     }
 }
 
+static unsigned calc_address_len(tvbuff_t *tvb, const gint start) {
+    if( tvb_get_guint8(tvb, start) & 1 ) return 1;
+    if( tvb_get_guint8(tvb, start+1) & 1 ) return 2;
+    return 4;
+}
+
 /* Dissect a DLMS APDU in an HDLC frame */
 static void
 dlms_dissect_hdlc(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
@@ -2431,7 +2443,7 @@ dlms_dissect_hdlc(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
     proto_item *item;
     fragment_head *frags;
     tvbuff_t *rtvb; /* reassembled tvb */
-    unsigned length, segmentation, control;
+    unsigned length, segmentation, control, da_len, sa_len, control_off;
 
     subtree = proto_tree_add_subtree(tree, tvb, 0, 0, dlms_ett.hdlc, 0, "HDLC");
 
@@ -2447,82 +2459,85 @@ dlms_dissect_hdlc(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
     length = tvb_get_ntohs(tvb, 1) & 0x7ff; /* length of HDLC frame excluding the opening and closing flag fields */
 
     /* Destination address field */
-    subsubtree = proto_tree_add_subtree(subtree, tvb, 3, 1, dlms_ett.hdlc_address, 0, "Destination Address");
-    proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_address, tvb, 3, 1, ENC_NA);
+    da_len=calc_address_len(tvb, 3);
+    subsubtree = proto_tree_add_subtree(subtree, tvb, 3, da_len, dlms_ett.hdlc_address, 0, "Destination Address");
+    proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_address, tvb, 3, da_len, ENC_NA);
 
     /* Source address field */
-    subsubtree = proto_tree_add_subtree(subtree, tvb, 4, 1, dlms_ett.hdlc_address, 0, "Source Address");
-    proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_address, tvb, 4, 1, ENC_NA);
+    sa_len=calc_address_len(tvb, 3+da_len);
+    subsubtree = proto_tree_add_subtree(subtree, tvb, 3+da_len, sa_len, dlms_ett.hdlc_address, 0, "Source Address");
+    proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_address, tvb, 3+da_len, sa_len, ENC_NA);
 
     /* Control field */
-    subsubtree = proto_tree_add_subtree(subtree, tvb, 5, 1, dlms_ett.hdlc_control, 0, "Control");
-    control = tvb_get_guint8(tvb, 5);
+    control_off=3+da_len+sa_len;
+    subsubtree = proto_tree_add_subtree(subtree, tvb, control_off, 1, dlms_ett.hdlc_control, 0, "Control");
+    control = tvb_get_guint8(tvb, control_off);
 
     /* Header check sequence field */
     if (length > 7) {
-        dlms_dissect_hdlc_check_sequence(tvb, pinfo, subtree, 1, 5, &dlms_hfi.hdlc_hcs);
+        dlms_dissect_hdlc_check_sequence(tvb, pinfo, subtree, 1, control_off, &dlms_hfi.hdlc_hcs);
     }
 
     /* Control sub-fields and information field */
     if ((control & 0x01) == 0x00) {
         col_add_str(pinfo->cinfo, COL_INFO, "HDLC I"); /* Information */
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_i, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_ssn, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_i, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_ssn, tvb, control_off, 1, ENC_NA);
 
-        subsubtree = proto_tree_add_subtree_format(subtree, tvb, 8, length - 9, dlms_ett.hdlc_information, 0, "Information Field (length %u)", length - 9);
-        frags = fragment_add_seq_next(&dlms_reassembly_table, tvb, 8, pinfo, DLMS_REASSEMBLY_ID_HDLC, 0, length - 9, segmentation);
-        rtvb = process_reassembled_data(tvb, 8, pinfo, "Reassembled", frags, &dlms_fragment_items, 0, tree);
+        subsubtree = proto_tree_add_subtree_format(subtree, tvb, 6+da_len+sa_len, length - 9, dlms_ett.hdlc_information, 0, "Information Field (length %u)", length - 9);
+        frags = fragment_add_seq_next(&dlms_reassembly_table, tvb, 6+da_len+sa_len, pinfo, DLMS_REASSEMBLY_ID_HDLC, 0, length - 9, segmentation);
+        rtvb = process_reassembled_data(tvb, 6+da_len+sa_len, pinfo, "Reassembled", frags, &dlms_fragment_items, 0, tree);
         if (rtvb) {
             proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_llc, rtvb, 0, 3, ENC_NA);
             dlms_dissect_apdu(rtvb, pinfo, tree, 3);
         }
     } else if ((control & 0x0f) == 0x01) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC RR"); /* Receive Ready */
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_rr_rnr, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_rr_rnr, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
+		proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0x0f) == 0x05) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC RNR"); /* Receive Not Ready */
-        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_rr_rnr, tvb, 5, 1, ENC_NA);
+        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_rr_rnr, tvb, control_off, 1, ENC_NA);
         expert_add_info(pinfo, item, &dlms_ei.no_success);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_rsn, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0xef) == 0x83) { /* Set Normal Response Mode */
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC SNRM");
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
         if (length > 7) {
             gint offset = 8;
             dlms_dissect_hdlc_information(tvb, subtree, &offset);
         }
     } else if ((control & 0xef) == 0x43) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC DISC"); /* Disconnect */
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0xef) == 0x63) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC UA"); /* Unnumbered Acknowledge */
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
         if (length > 7) {
             gint offset = 8;
             dlms_dissect_hdlc_information(tvb, subtree, &offset);
         }
     } else if ((control & 0xef) == 0x0f) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC DM"); /* Disconnected Mode */
-        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
+        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
         expert_add_info(pinfo, item, &dlms_ei.no_success);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0xef) == 0x87) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC FRMR"); /* Frame Reject */
-        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
+        item = proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
         expert_add_info(pinfo, item, &dlms_ei.no_success);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+		proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0xef) == 0x03) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC UI"); /* Unnumbered Information */
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, 5, 1, ENC_NA);
-        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, 5, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
+        proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
     } else {
         col_set_str(pinfo->cinfo, COL_INFO, "Unknown HDLC frame");
     }
@@ -2546,7 +2561,26 @@ dlms_dissect_432(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
 static void
 dlms_dissect_wrapper(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
 {
-    proto_tree_add_item(tree, &dlms_hfi.wrapper_header, tvb, 0, 8, ENC_NA);
+	proto_tree *subtree, *subsubtree;
+	proto_item *item;
+	
+	subtree = proto_tree_add_subtree(tree, tvb, 0, 0, dlms_ett.wrapper, 0, "Wrapper");
+	
+	/* Wrapper version */
+    proto_tree_add_item(subtree, &dlms_hfi.wrapper_version, tvb, 0, 2, ENC_NA);
+
+	/* Wrapper source wPort */	
+	subsubtree = proto_tree_add_subtree(subtree, tvb, 2, 2, dlms_ett.wrapper_wport, 0, "Source wPort");
+    proto_tree_add_item(subsubtree, &dlms_hfi.wrapper_wport, tvb, 2, 2, ENC_NA);
+
+	/* Wrapper destination wPort */	
+	subsubtree = proto_tree_add_subtree(subtree, tvb, 4, 2, dlms_ett.wrapper_wport, 0, "Destination wPort");
+    proto_tree_add_item(subsubtree, &dlms_hfi.wrapper_wport, tvb, 4, 2, ENC_NA);
+	
+	/* Wrapper length */
+    proto_tree_add_item(subtree, &dlms_hfi.wrapper_length, tvb, 6, 2, ENC_NA);
+	
+	/* Dissect APDU */	
     dlms_dissect_apdu(tvb, pinfo, tree, 8);
 }
 
@@ -2682,10 +2716,13 @@ dlms_register_protoinfo(void)
 
 #define DLMS_PLUGIN_VERSION "0.0.3"
 
-#ifdef VERSION_RELEASE /* wireshark >= 2.6 */
+//#ifdef VERSION_RELEASE /* wireshark >= 2.6 */
 
-WS_DLL_PUBLIC_DEF const gchar plugin_release[] = VERSION_RELEASE;
+WS_DLL_PUBLIC_DEF const gchar plugin_release[] = DLMS_PLUGIN_VERSION;
 WS_DLL_PUBLIC_DEF const gchar plugin_version[] = DLMS_PLUGIN_VERSION;
+WS_DLL_PUBLIC_DEF const int plugin_want_major = 3;
+WS_DLL_PUBLIC_DEF const int plugin_want_minor = 2;
+
 WS_DLL_PUBLIC_DEF void
 plugin_register(void)
 {
@@ -2693,14 +2730,3 @@ plugin_register(void)
     p.register_protoinfo = dlms_register_protoinfo;
     proto_register_plugin(&p);
 }
-
-#else /* wireshark < 2.6 */
-
-WS_DLL_PUBLIC_DEF const gchar version[] = DLMS_PLUGIN_VERSION;
-WS_DLL_PUBLIC_DEF void
-plugin_register(void)
-{
-    dlms_register_protoinfo();
-}
-
-#endif
