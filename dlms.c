@@ -749,7 +749,13 @@ dlms_get_method_name(const dlms_cosem_class *c, int method_id) {
 }
 
 /* The DLMS protocol handle */
-static int dlms_proto;
+static int dlms_proto = -1;
+
+#define TUNEL_TYPE_NONE			-1	
+#define TUNEL_TYPE_HDLC		 	0
+#define TUNEL_TYPE_WRAPPER		1
+
+static int tunel_type = TUNEL_TYPE_NONE;
 
 /* The DLMS header_field_info (hfi) structures */
 static struct {
@@ -1061,7 +1067,8 @@ static reassembly_table dlms_reassembly_table;
 
 enum {
     /* Do not use 0 as id because that would return a NULL key */
-    DLMS_REASSEMBLY_ID_HDLC = 1,
+	DLMS_REASSEMBLY_ID_TUNEL = 1,
+	DLMS_REASSEMBLY_ID_HDLC,
     DLMS_REASSEMBLY_ID_DATABLOCK,
 };
 
@@ -2518,7 +2525,7 @@ dlms_dissect_hdlc(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
         proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
     } else if ((control & 0xef) == 0x63) {
         col_set_str(pinfo->cinfo, COL_INFO, "HDLC UA"); /* Unnumbered Acknowledge */
-proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
+		proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_frame_other, tvb, control_off, 1, ENC_NA);
         proto_tree_add_item(subsubtree, &dlms_hfi.hdlc_pf, tvb, control_off, 1, ENC_NA);
         if (length > 7) {
             gint offset = 8;
@@ -2587,29 +2594,86 @@ dlms_dissect_wrapper(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
 static int
 dlms_dissect(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
-    header_field_info *hfi;
+	header_field_info *hfi;
     proto_item *item;
     proto_tree *subtree;
-    unsigned first_byte;
+	
+	gboolean save_fragmented;
+	fragment_head *frags;	
+	tvbuff_t *rtvb;
 
+	tvbuff_t *next_tvb;	
+	unsigned first_byte;
+	gint start_offset;
+	gint end_offset;
+	gint packet_length;
+		
     col_set_str(pinfo->cinfo, COL_PROTOCOL, "DLMS");
 
     hfi = proto_registrar_get_nth(dlms_proto);
-    item = proto_tree_add_item(tree, hfi, tvb, 0, -1, ENC_NA);
-    subtree = proto_item_add_subtree(item, dlms_ett.dlms);
+    	
+	start_offset = 0;
+	next_tvb = tvb;
+	
+	do 
+	{			
+		packet_length = tvb_captured_length_remaining(next_tvb, 0);
+		first_byte = tvb_get_guint8(next_tvb, 0);
+		end_offset = tvb_find_guint8(next_tvb, 1, -1, 0x7e);			
 
-    first_byte = tvb_get_guint8(tvb, 0);
-    if (first_byte == 0x7e) {
-        dlms_dissect_hdlc(tvb, pinfo, subtree);
-    } else if (first_byte == 0x90) {
-        dlms_dissect_432(tvb, pinfo, subtree);
-    } else if (first_byte == 0) {
-        dlms_dissect_wrapper(tvb, pinfo, subtree);
-    } else {
-        dlms_dissect_apdu(tvb, pinfo, subtree, 0);
-    }
+		item = proto_tree_add_item(tree, hfi, next_tvb, 0, end_offset == -1 ? -1 : end_offset + 1, ENC_NA);
+		subtree = proto_item_add_subtree(item, dlms_ett.dlms);
+		
+		if (first_byte == 0x7e && end_offset != -1)
+		{	
+			tunel_type = TUNEL_TYPE_NONE;
+			dlms_dissect_hdlc(next_tvb, pinfo, subtree);
+			if (end_offset < (packet_length - 1))
+			{
+				/* Next packet */
+				start_offset += (end_offset + 1);
+				next_tvb = tvb_new_subset_remaining(tvb, start_offset);
+				continue;											
+			}
+			return tvb_captured_length(tvb);
+		}
+		break;
+	}
+	while (TRUE);
+	
+	if (first_byte == 0x7e)
+	{	
+		tunel_type = TUNEL_TYPE_HDLC;
+		save_fragmented = TRUE;
+	}
+	else if (end_offset != -1)
+	{
+		tunel_type = TUNEL_TYPE_NONE;
+		save_fragmented = FALSE;
+	}
+	else 
+	{
+		if (tunel_type == TUNEL_TYPE_HDLC) 
+		{
+			save_fragmented = TRUE;
+		}
+		else
+		{
+			save_fragmented = FALSE;
+			dlms_dissect_wrapper(next_tvb, pinfo, subtree);
+			return tvb_captured_length(tvb);
+		}
+	}	
 
-    return tvb_captured_length(tvb);
+	pinfo->fragmented = save_fragmented;
+			
+	frags = fragment_add_seq_next(&dlms_reassembly_table, next_tvb, 0, pinfo, DLMS_REASSEMBLY_ID_TUNEL, 0, packet_length, save_fragmented);		
+	rtvb = process_reassembled_data(next_tvb, 0, pinfo, "Reassembled Message", frags, &dlms_fragment_items, 0, tree);
+	if (rtvb) {
+		dlms_dissect_hdlc(rtvb, pinfo, subtree);
+	}		
+	
+	return tvb_captured_length(tvb);	
 }
 
 static guint
@@ -2705,6 +2769,12 @@ dlms_register_protoinfo(void)
 
     /* Register the TCP handler */
     {
+        dissector_handle_t dh = create_dissector_handle(dlms_dissect, dlms_proto);
+        dissector_add_uint("tcp.port", DLMS_PORT + 1, dh);
+    }
+
+    /* Register the TCP handler */
+    {
         dissector_handle_t dh = create_dissector_handle(dlms_dissect_tcp, dlms_proto);
         dissector_add_uint("tcp.port", DLMS_PORT, dh);
     }
@@ -2715,8 +2785,6 @@ dlms_register_protoinfo(void)
  */
 
 #define DLMS_PLUGIN_VERSION "0.0.3"
-
-//#ifdef VERSION_RELEASE /* wireshark >= 2.6 */
 
 WS_DLL_PUBLIC_DEF const gchar plugin_release[] = DLMS_PLUGIN_VERSION;
 WS_DLL_PUBLIC_DEF const gchar plugin_version[] = DLMS_PLUGIN_VERSION;
